@@ -1,4 +1,6 @@
 import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class LivroDAO {
     private RandomAccessFile arq;
@@ -21,7 +23,7 @@ public class LivroDAO {
 
     private void gravarLivroNoFim(Livro l) throws IOException {
         arq.seek(arq.length());
-        arq.writeBoolean(false); // Lápide ativo
+        arq.writeBoolean(false); // Registro ativo
 
         byte[] bIsbn = l.getIsbn().getBytes("UTF-8");
         byte[] bTitulo = l.getTitulo().getBytes("UTF-8");
@@ -66,6 +68,35 @@ public class LivroDAO {
             arq.seek(proximoRegistro);
         }
         return null;
+    }
+
+    public List<Livro> readAll() throws IOException {
+        List<Livro> livros = new ArrayList<>();
+        arq.seek(4);
+
+        while (arq.getFilePointer() < arq.length()) {
+            boolean lapide = arq.readBoolean();
+            int tamRegistro = arq.readInt();
+            long proximoRegistro = arq.getFilePointer() + tamRegistro;
+
+            if (!lapide) {
+                int id = arq.readInt();
+                float preco = arq.readFloat();
+                long data = arq.readLong();
+                int edicao = arq.readInt();
+                String isbn = readString();
+                String titulo = readString();
+                String categorias = readString();
+                String autores = readString();
+                String editora = readString();
+
+                livros.add(new Livro(id, isbn, titulo, preco, data, categorias, autores, edicao, editora));
+            }
+
+            arq.seek(proximoRegistro);
+        }
+
+        return livros;
     }
 
     private String readString() throws IOException {
