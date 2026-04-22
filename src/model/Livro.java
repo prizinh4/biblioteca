@@ -1,3 +1,5 @@
+package model;
+
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
@@ -26,7 +28,6 @@ public class Livro {
         this.editora = editora;
     }
 
-    // Getters e Setters
     public int getId() { return id; }
     public void setId(int id) { this.id = id; }
     public String getIsbn() { return isbn; }
@@ -43,9 +44,9 @@ public class Livro {
         SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy");
         return "\n--- DADOS DO LIVRO ---" +
                "\nID: " + id + " | ISBN: " + isbn +
-               "\nTítulo: " + titulo + " | Edição: " + edicao +
-               "\nEditora: " + editora + " | Preço Reposição: R$" + precoReposicao +
-               "\nData de Publicação: " + sdf.format(new Date(dataPublicacao)) +
+               "\nT\u00EDtulo: " + titulo + " | Edi\u00E7\u00E3o: " + edicao +
+               "\nEditora: " + editora + " | Pre\u00E7o Reposi\u00E7\u00E3o: R$" + precoReposicao +
+               "\nData de Publica\u00E7\u00E3o: " + sdf.format(new Date(dataPublicacao)) +
                "\nCategorias: " + categorias + " | Autores: " + autores;
     }
 }
