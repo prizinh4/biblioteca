@@ -20,12 +20,16 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import model.Exemplar;
 import model.Leitor;
 import model.Livro;
 import model.Reserva;
+import seguranca.GerenciadorLogin;
 
 public class ServidorWeb {
     private final HttpServer servidor;
@@ -40,6 +44,7 @@ public class ServidorWeb {
     private final OrdenacaoExternaLivros ordenacaoExterna;
     private final ArvoreBMaisIndice arvoreBMais;
     private final BackupManager backupManager;
+    private final Set<String> sessoes = new HashSet<>();
 
     public ServidorWeb(int porta) throws IOException {
         this.livroDAO = new LivroDAO();
@@ -55,6 +60,7 @@ public class ServidorWeb {
         this.backupManager = new BackupManager();
 
         this.servidor = HttpServer.create(new InetSocketAddress(porta), 0);
+        GerenciadorLogin.inicializar();
         registrarRotas();
         carregarArvoreBMais();
     }
@@ -77,6 +83,11 @@ public class ServidorWeb {
 
     private void registrarRotas() {
         servidor.createContext("/", this::tratarInicio);
+        servidor.createContext("/login", this::tratarLogin);
+        servidor.createContext("/cadastro", this::tratarCadastro);
+        servidor.createContext("/api/login", this::tratarApiLogin);
+        servidor.createContext("/api/cadastro", this::tratarApiCadastro);
+        servidor.createContext("/api/logout", this::tratarApiLogout);
         servidor.createContext("/api/livros", this::tratarLivros);
         servidor.createContext("/api/exemplares", this::tratarExemplares);
         servidor.createContext("/api/leitores", this::tratarLeitores);
@@ -92,15 +103,122 @@ public class ServidorWeb {
         );
     }
 
+    // ── Helpers de sessão ──────────────────────────────────────────────────────
+
+    private String obterToken(HttpExchange req) {
+        String cookieHeader = req.getRequestHeaders().getFirst("Cookie");
+        if (cookieHeader == null) return null;
+        for (String par : cookieHeader.split(";")) {
+            String[] kv = par.trim().split("=", 2);
+            if (kv.length == 2 && "sessao".equals(kv[0].trim())) return kv[1].trim();
+        }
+        return null;
+    }
+
+    private boolean estaAutenticado(HttpExchange req) {
+        String token = obterToken(req);
+        return token != null && sessoes.contains(token);
+    }
+
+    private void redirecionarLogin(HttpExchange req) throws IOException {
+        req.getResponseHeaders().set("Location", "/login");
+        req.sendResponseHeaders(302, -1);
+        req.getResponseBody().close();
+    }
+
+    // ── Tela de login ──────────────────────────────────────────────────────────
+
+    private void tratarLogin(HttpExchange req) throws IOException {
+        if ("GET".equalsIgnoreCase(req.getRequestMethod())) {
+            enviarResposta(req, 200, "text/html; charset=utf-8", gerarHtmlLogin(""));
+        } else {
+            enviarResposta(req, 405, "text/plain", "Metodo nao permitido.");
+        }
+    }
+
+    private void tratarApiLogin(HttpExchange req) throws IOException {
+        if (!"POST".equalsIgnoreCase(req.getRequestMethod())) {
+            enviarResposta(req, 405, "text/plain", "Metodo nao permitido.");
+            return;
+        }
+        try {
+            Map<String, String> p = lerFormulario(req);
+            String usuario = p.getOrDefault("usuario", "");
+            String senha   = p.getOrDefault("senha", "");
+            if (GerenciadorLogin.validar(usuario, senha)) {
+                String token = UUID.randomUUID().toString();
+                sessoes.add(token);
+                req.getResponseHeaders().set("Set-Cookie", "sessao=" + token + "; Path=/; HttpOnly");
+                req.getResponseHeaders().set("Location", "/");
+                req.sendResponseHeaders(302, -1);
+                req.getResponseBody().close();
+            } else {
+                enviarResposta(req, 200, "text/html; charset=utf-8",
+                    gerarHtmlLogin("Usuário ou senha incorretos."));
+            }
+        } catch (Exception e) {
+            enviarResposta(req, 400, "text/plain", "Erro: " + e.getMessage());
+        }
+    }
+
+    private void tratarCadastro(HttpExchange req) throws IOException {
+        if ("GET".equalsIgnoreCase(req.getRequestMethod())) {
+            enviarResposta(req, 200, "text/html; charset=utf-8", gerarHtmlCadastro(""));
+        } else {
+            enviarResposta(req, 405, "text/plain", "Metodo nao permitido.");
+        }
+    }
+
+    private void tratarApiCadastro(HttpExchange req) throws IOException {
+        if (!"POST".equalsIgnoreCase(req.getRequestMethod())) {
+            enviarResposta(req, 405, "text/plain", "Metodo nao permitido.");
+            return;
+        }
+        try {
+            Map<String, String> p = lerFormulario(req);
+            String usuario = p.getOrDefault("usuario", "").trim();
+            String senha   = p.getOrDefault("senha", "");
+            if (usuario.isBlank() || senha.isBlank()) {
+                enviarResposta(req, 200, "text/html; charset=utf-8",
+                    gerarHtmlCadastro("Preencha usuário e senha."));
+                return;
+            }
+            if (GerenciadorLogin.existeUsuario(usuario)) {
+                enviarResposta(req, 200, "text/html; charset=utf-8",
+                    gerarHtmlCadastro("Usuário já existe."));
+                return;
+            }
+            GerenciadorLogin.cadastrar(usuario, senha);
+            req.getResponseHeaders().set("Location", "/login");
+            req.sendResponseHeaders(302, -1);
+            req.getResponseBody().close();
+        } catch (Exception e) {
+            enviarResposta(req, 400, "text/plain", "Erro: " + e.getMessage());
+        }
+    }
+
+    private void tratarApiLogout(HttpExchange req) throws IOException {
+        String token = obterToken(req);
+        if (token != null) sessoes.remove(token);
+        req.getResponseHeaders().set("Set-Cookie", "sessao=; Path=/; Max-Age=0");
+        req.getResponseHeaders().set("Location", "/login");
+        req.sendResponseHeaders(302, -1);
+        req.getResponseBody().close();
+    }
+
+    // ── Início (protegido) ─────────────────────────────────────────────────────
+
     private void tratarInicio(HttpExchange req) throws IOException {
         if (!"GET".equalsIgnoreCase(req.getRequestMethod())) {
             enviarResposta(req, 405, "text/plain", "Metodo nao permitido.");
             return;
         }
+        if (!estaAutenticado(req)) { redirecionarLogin(req); return; }
         enviarResposta(req, 200, "text/html; charset=utf-8", gerarHtml());
     }
 
     private void tratarLivros(HttpExchange req) throws IOException {
+        if (!estaAutenticado(req)) { enviarResposta(req, 401, "text/plain", "Nao autenticado."); return; }
         try {
             String caminho = req.getRequestURI().getPath();
             String metodo = req.getRequestMethod();
@@ -146,6 +264,7 @@ public class ServidorWeb {
     }
 
     private void tratarExemplares(HttpExchange req) throws IOException {
+        if (!estaAutenticado(req)) { enviarResposta(req, 401, "text/plain", "Nao autenticado."); return; }
         try {
             String caminho = req.getRequestURI().getPath();
             String metodo = req.getRequestMethod();
@@ -189,6 +308,7 @@ public class ServidorWeb {
     }
 
     private void tratarLeitores(HttpExchange req) throws IOException {
+        if (!estaAutenticado(req)) { enviarResposta(req, 401, "text/plain", "Nao autenticado."); return; }
         try {
             String caminho = req.getRequestURI().getPath();
             String metodo = req.getRequestMethod();
@@ -233,6 +353,7 @@ public class ServidorWeb {
     }
 
     private void tratarReservas(HttpExchange req) throws IOException {
+        if (!estaAutenticado(req)) { enviarResposta(req, 401, "text/plain", "Nao autenticado."); return; }
         try {
             String caminho = req.getRequestURI().getPath();
             String metodo = req.getRequestMethod();
@@ -533,6 +654,53 @@ Estado: %s
         try (OutputStream out = req.getResponseBody()) { out.write(bytes); }
     }
 
+    private String gerarHtmlLogin(String erro) {
+        String msgErro = erro.isBlank() ? "" :
+            "<p style='color:#ef4444;margin:0 0 12px;font-size:14px'>" + erro + "</p>";
+        return """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Login — Biblioteca</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Segoe UI,Tahoma,sans-serif;
+         background:linear-gradient(135deg,#e2e8f0,#f8fafc);
+         display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .card{background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(2,6,23,.12);
+          padding:36px 32px;width:100%%;max-width:360px}
+    h2{margin:0 0 6px;color:#0f172a}
+    .sub{color:#64748b;font-size:13px;margin:0 0 24px}
+    label{display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#334155}
+    input{width:100%%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;
+          font-size:14px;margin-bottom:16px;outline:none}
+    input:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
+    button{width:100%%;padding:11px;border:0;border-radius:8px;
+           background:#0ea5e9;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+    button:hover{background:#0284c7}
+    .nota{margin-top:14px;font-size:12px;color:#94a3b8;text-align:center}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>Biblioteca</h2>
+  <p class="sub">Acesso ao sistema de gerenciamento</p>
+  %s
+  <form action="/api/login" method="POST">
+    <label>Usuário</label>
+    <input type="text" name="usuario" required autofocus placeholder="login"/>
+    <label>Senha</label>
+    <input type="password" name="senha" required placeholder=""/>
+    <button type="submit">Entrar</button>
+  </form>
+</div>
+</body>
+</html>
+""".formatted(msgErro);
+    }
+
     private String gerarHtml() {
         return """
 <!doctype html>
@@ -540,7 +708,7 @@ Estado: %s
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Biblioteca Fase 3</title>
+  <title>Biblioteca Fase 5</title>
   <style>
     :root{--bg:#f8fafc;--card:#ffffff;--ink:#0f172a;--accent:#0ea5e9;--muted:#64748b;--green:#10b981;--red:#ef4444}
     body{margin:0;font-family:Segoe UI,Tahoma,sans-serif;background:linear-gradient(120deg,#e2e8f0,#f8fafc);color:var(--ink)}
@@ -556,15 +724,19 @@ Estado: %s
     button.danger{background:var(--red)}
     pre{background:#0b1220;color:#dbeafe;min-height:180px;padding:12px;border-radius:10px;overflow:auto;font-size:13px}
     .legenda{color:var(--muted);font-size:13px;margin:0 0 16px}
-    .secao{margin-top:20px}
-    details{padding:12px;background:#f0f4f8;border-radius:8px}
-    summary{cursor:pointer;font-weight:bold;color:#333}
+    .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+    .btn-logout{border:0;border-radius:8px;background:#ef4444;color:#fff;padding:8px 14px;cursor:pointer;font-size:13px}
   </style>
 </head>
 <body>
 <div class="container">
-  <h1>Biblioteca</h1>
-  <p class="legenda">Sistema de gerenciamento — Fase 4</p>
+  <div class="header">
+    <h1>Biblioteca</h1>
+    <form action="/api/logout" method="POST" style="margin:0">
+      <button type="submit" class="btn-logout">Sair</button>
+    </form>
+  </div>
+  <p class="legenda">Sistema de gerenciamento — Fase 5</p>
   <div class="grade">
 
     <div class="cartao">
