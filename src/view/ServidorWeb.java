@@ -2,6 +2,8 @@ package view;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import busca.BoyerMoore;
+import busca.KMP;
 import compression.BackupManager;
 import controller.ExemplarController;
 import controller.LeitorController;
@@ -99,8 +101,8 @@ public class ServidorWeb {
         servidor.createContext("/api/backup/huffman/gerar",this::tratarBackup);
         servidor.createContext("/api/backup/huffman/restaurar",this::tratarBackup);
         servidor.createContext("/api/backup/lzw/gerar",this::tratarBackup);
-        servidor.createContext("/api/backup/lzw/restaurar",this::tratarBackup
-        );
+        servidor.createContext("/api/backup/lzw/restaurar",this::tratarBackup);
+        servidor.createContext("/api/busca", this::tratarBusca);
     }
 
     // ── Helpers de sessão ──────────────────────────────────────────────────────
@@ -492,6 +494,44 @@ public class ServidorWeb {
         }
     }
 
+    private void tratarBusca(HttpExchange req) throws IOException {
+        if (!estaAutenticado(req)) { enviarResposta(req, 401, "text/plain", "Nao autenticado."); return; }
+        if (!"GET".equalsIgnoreCase(req.getRequestMethod())) {
+            enviarResposta(req, 405, "text/plain", "Metodo nao permitido."); return;
+        }
+        try {
+            Map<String, String> params = lerConsulta(req.getRequestURI().getRawQuery());
+            String padrao = params.getOrDefault("padrao", "").trim();
+            String algoritmo = params.getOrDefault("algoritmo", "kmp").trim().toLowerCase();
+            if (padrao.isEmpty()) {
+                enviarResposta(req, 400, "text/plain; charset=utf-8", "Informe o parametro 'padrao'."); return;
+            }
+            List<Livro> todos = livroController.listarTodos();
+            StringBuilder sb = new StringBuilder();
+            sb.append("Algoritmo: ").append(algoritmo.equalsIgnoreCase("bm") ? "Boyer-Moore" : "KMP")
+              .append(" | Padrao: \"").append(padrao).append("\"\n\n");
+            int encontrados = 0;
+            for (Livro l : todos) {
+                List<Integer> posicoes;
+                if ("bm".equals(algoritmo)) {
+                    posicoes = BoyerMoore.buscar(l.getTitulo(), padrao);
+                } else {
+                    posicoes = KMP.buscar(l.getTitulo(), padrao);
+                }
+                if (!posicoes.isEmpty()) {
+                    sb.append(l).append("\n");
+                    sb.append("  (ocorrencias no titulo nas posicoes: ").append(posicoes).append(")\n\n");
+                    encontrados++;
+                }
+            }
+            if (encontrados == 0) sb.append("Nenhum livro encontrado com o padrao informado.");
+            else sb.append("Total encontrado: ").append(encontrados).append(" livro(s).");
+            enviarResposta(req, 200, "text/plain; charset=utf-8", sb.toString());
+        } catch (Exception e) {
+            enviarResposta(req, 400, "text/plain; charset=utf-8", "Erro: " + e.getMessage());
+        }
+    }
+
     private void tratarBackup(HttpExchange req) throws IOException {
     try {
         String caminho = req.getRequestURI().getPath();
@@ -701,6 +741,53 @@ Estado: %s
 """.formatted(msgErro);
     }
 
+    private String gerarHtmlCadastro(String erro) {
+        String msgErro = erro.isBlank() ? "" :
+            "<p style='color:#ef4444;margin:0 0 12px;font-size:14px'>" + erro + "</p>";
+        return """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Cadastro — Biblioteca</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Segoe UI,Tahoma,sans-serif;
+         background:linear-gradient(135deg,#e2e8f0,#f8fafc);
+         display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .card{background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(2,6,23,.12);
+          padding:36px 32px;width:100%%;max-width:360px}
+    h2{margin:0 0 6px;color:#0f172a}
+    .sub{color:#64748b;font-size:13px;margin:0 0 24px}
+    label{display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#334155}
+    input{width:100%%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;
+          font-size:14px;margin-bottom:16px;outline:none}
+    input:focus{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.15)}
+    button{width:100%%;padding:11px;border:0;border-radius:8px;
+           background:#10b981;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+    button:hover{background:#059669}
+    .nota{margin-top:14px;font-size:12px;color:#94a3b8;text-align:center}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>Criar Conta</h2>
+  <p class="sub">Novo acesso ao sistema</p>
+  %s
+  <form action="/api/cadastro" method="POST">
+    <label>Usuário</label>
+    <input type="text" name="usuario" required autofocus/>
+    <label>Senha</label>
+    <input type="password" name="senha" required/>
+    <button type="submit">Cadastrar</button>
+  </form>
+  <p class="nota"><a href="/login">Já tem conta? Entrar</a></p>
+</div>
+</body>
+</html>
+""".formatted(msgErro);
+    }
+
     private String gerarHtml() {
         return """
 <!doctype html>
@@ -778,6 +865,18 @@ Estado: %s
     </div>
 
     <div class="cartao">
+      <h3>Pesquisar por Padrão (KMP / BM)</h3>
+      <div class="linha">
+        <input id="busca-padrao" placeholder="padrão de busca"/>
+        <select id="busca-algo" style="padding:8px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px">
+          <option value="kmp">KMP</option>
+          <option value="bm">Boyer-Moore</option>
+        </select>
+        <button onclick="buscarPadrao()">Buscar</button>
+      </div>
+    </div>
+
+    <div class="cartao">
       <h3>Reserva</h3>
       <div class="linha"><input id="reserva-leitor" placeholder="idLeitor"><input id="reserva-livro" placeholder="idLivro"></div>
       <div class="linha">
@@ -844,6 +943,7 @@ Estado: %s
   async function req(url, ops={}) { const r = await fetch(url, ops); saida.textContent = await r.text(); }
   const v = id => document.getElementById(id).value || '';
 
+  function buscarPadrao(){ req('/api/busca?padrao='+encodeURIComponent(v('busca-padrao'))+'&algoritmo='+v('busca-algo')); }
   function listarLivros(){ req('/api/livros'); }
   function buscarLivro(){ req('/api/livros/'+v('livro-id')); }
   function inserirLivro(){ req('/api/livros',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:cod({titulo:v('livro-titulo'),isbn:v('livro-isbn'),editora:v('livro-editora'),edicao:v('livro-edicao'),preco:v('livro-preco'),data:v('livro-data'),autores:v('livro-autores'),categorias:v('livro-categorias')})}); }
